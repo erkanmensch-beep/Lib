@@ -1,0 +1,739 @@
+--[[
+	Libary.lua
+	A minimal, modern window shell for Roblox script UIs.
+
+	Scope: the main window, the left-side text tabs and the text separators
+	between tab groups. No icons and no elements yet - just the shell.
+
+	Everything is plain text and layout: no image assets, no dependencies.
+
+	Usage:
+		local Library = loadstring(source)()
+
+		local Window = Library:CreateWindow({
+			Name = "Bomjara",
+			SubTitle = "v1.0.0",
+			ToggleKeybind = Enum.KeyCode.RightShift,
+			Style = "Subtle" -- or "Accent"
+		})
+
+		Library:AddRailSection({ Name = "General" }) -- text separator
+		Library:CreateTab({ Name = "Aimbox" })       -- rail tab
+		Library:CreateTab("Visuals")                 -- string shorthand
+		Library:AddRailDivider()                     -- thin line separator
+
+		Library:ShowTab("Aimbox")
+]]
+
+local Library = {}
+
+do
+	-- // Services
+	local UserInputService = game:GetService("UserInputService")
+	local TweenService = game:GetService("TweenService")
+	local Players = game:GetService("Players")
+	local LocalPlayer = Players.LocalPlayer
+	local CoreGui = game:GetService("CoreGui")
+
+	-- // Theme (CSS-like tokens; override them before CreateWindow)
+	Library.Theme = {
+		Window_Background = Color3.fromRGB(12, 12, 14),
+		Window_Outline = Color3.fromRGB(27, 27, 31),
+		Content_Background = Color3.fromRGB(18, 18, 21),
+		Search_Background = Color3.fromRGB(24, 24, 28),
+		Search_Outline = Color3.fromRGB(36, 36, 41),
+		Tab_Fill = Color3.fromRGB(30, 30, 35),
+		Divider = Color3.fromRGB(26, 26, 30),
+		Caption = Color3.fromRGB(98, 98, 106),
+		Text = Color3.fromRGB(240, 240, 244),
+		Text_Active = Color3.fromRGB(255, 255, 255),
+		Text_Muted = Color3.fromRGB(146, 146, 154),
+		Text_Dim = Color3.fromRGB(98, 98, 106),
+		Accent = Color3.fromRGB(86, 128, 240)
+	}
+	local Theme = Library.Theme
+
+	-- // State
+	Library.Tabs = {}
+	Library.Groups = {}
+	Library.CurrentTab = nil
+	Library.RailOrder = 0
+	Library.Window = nil
+	Library.Style = "Subtle"
+
+	-- ///////////////////////////////////////////////////////////////////////
+	-- // DOM-style helpers (create -> style -> append)
+	-- ///////////////////////////////////////////////////////////////////////
+
+	local function Create(ClassName, Props, Children)
+		local Inst = Instance.new(ClassName)
+		local Parent = nil
+		if Props then
+			for Prop, Value in next, Props do
+				if Prop == "Parent" then
+					Parent = Value
+				else
+					Inst[Prop] = Value
+				end
+			end
+		end
+		if Children then
+			for _, Child in next, Children do
+				Child.Parent = Inst
+			end
+		end
+		if Parent then
+			Inst.Parent = Parent
+		end
+		return Inst
+	end
+
+	local function Tween(Instance, Time, Props)
+		local Anim = TweenService:Create(
+			Instance,
+			TweenInfo.new(Time or 0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+			Props
+		)
+		Anim:Play()
+		return Anim
+	end
+
+	local function Pcall(Func, ...)
+		local Success, Error = pcall(Func, ...)
+		if not Success then
+			warn("[Libary] " .. tostring(Error))
+		end
+	end
+
+	local function MakeDraggable(Handle, MoveTarget)
+		local Dragging = false
+		local DragStart, StartPos
+
+		Handle.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				Dragging = true
+				DragStart = Input.Position
+				StartPos = MoveTarget.Position
+				Input.Changed:Connect(function()
+					if Input.UserInputState == Enum.UserInputState.End then
+						Dragging = false
+					end
+				end)
+			end
+		end)
+
+		UserInputService.InputChanged:Connect(function(Input)
+			if Dragging and (Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch) then
+				local Delta = Input.Position - DragStart
+				MoveTarget.Position = UDim2.new(
+					StartPos.X.Scale,
+					StartPos.X.Offset + Delta.X,
+					StartPos.Y.Scale,
+					StartPos.Y.Offset + Delta.Y
+				)
+			end
+		end)
+	end
+
+	local function MakeResizeable(Handle, ResizeTarget, MinSize, MaxSize)
+		local Dragging = false
+		local DragStart, StartSize
+
+		Handle.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				Dragging = true
+				DragStart = Input.Position
+				StartSize = ResizeTarget.Size
+				Input.Changed:Connect(function()
+					if Input.UserInputState == Enum.UserInputState.End then
+						Dragging = false
+					end
+				end)
+			end
+		end)
+
+		UserInputService.InputChanged:Connect(function(Input)
+			if Dragging and (Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch) then
+				local Delta = Input.Position - DragStart
+				ResizeTarget.Size = UDim2.new(
+					0, math.clamp(StartSize.X.Offset + Delta.X, MinSize.X, MaxSize.X),
+					0, math.clamp(StartSize.Y.Offset + Delta.Y, MinSize.Y, MaxSize.Y)
+				)
+			end
+		end)
+	end
+
+	local function HandleCanvasSize(ListFrame)
+		local ListLayout = ListFrame:FindFirstChildOfClass("UIListLayout")
+		if ListLayout then
+			ListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+				ListFrame.CanvasSize = UDim2.new(0, 0, 0, ListLayout.AbsoluteContentSize.Y + 8)
+			end)
+		end
+	end
+
+	-- separators own the tabs that follow them, so filtering can hide a whole group
+	local function PushGroup(Frame)
+		Library.Groups[#Library.Groups + 1] = { Frame = Frame, Tabs = {} }
+		return Library.Groups[#Library.Groups]
+	end
+
+	local function CurrentGroup()
+		if #Library.Groups == 0 then
+			PushGroup(nil)
+		end
+		return Library.Groups[#Library.Groups]
+	end
+
+	-- ///////////////////////////////////////////////////////////////////////
+	-- // Window
+	-- ///////////////////////////////////////////////////////////////////////
+
+	function Library:CreateWindow(Info)
+		Info = Info or {}
+		Info.Name = Info.Name or "Libary"
+		Info.SubTitle = Info.SubTitle or nil
+		Info.Size = Info.Size or UDim2.fromOffset(640, 400)
+		Info.ToggleKeybind = Info.ToggleKeybind or Enum.KeyCode.RightShift
+		Info.Style = Info.Style or "Subtle" -- "Subtle" = grey fill, "Accent" = colored fill
+		Info.RailWidth = Info.RailWidth or 160
+		Info.Search = Info.Search ~= false
+		Info.SearchPlaceholder = Info.SearchPlaceholder or "Search..."
+		Info.Resizable = Info.Resizable ~= false
+		Info.EmptyText = Info.EmptyText or "Nothing here yet"
+		Info.TitleAlign = Info.TitleAlign or "Center"
+
+		-- tear down a previous window
+		if Library.Window then
+			Pcall(function()
+				Library.Window.ScreenGui:Destroy()
+			end)
+			Library.Window = nil
+		end
+
+		Library.Style = Info.Style
+		Library.Tabs = {}
+		Library.Groups = {}
+		Library.CurrentTab = nil
+		Library.RailOrder = 0
+
+		local ScreenGui = Create("ScreenGui", {
+			Name = Info.Name,
+			ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+			ResetOnSpawn = false,
+			IgnoreGuiInset = true,
+			DisplayOrder = 999
+		})
+
+		-- executor-safe parenting
+		local Parented = false
+		if gethui and type(gethui) == "function" then
+			Parented = pcall(function()
+				ScreenGui.Parent = gethui()
+			end)
+		end
+		if not Parented then
+			Parented = pcall(function()
+				ScreenGui.Parent = CoreGui
+			end)
+		end
+		if not Parented then
+			ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+		end
+
+		local Window = Create("Frame", {
+			Name = "Window",
+			Size = Info.Size,
+			Position = UDim2.new(0.5, -Info.Size.X.Offset / 2, 0.5, -Info.Size.Y.Offset / 2),
+			BackgroundColor3 = Theme.Window_Background,
+			BorderSizePixel = 0,
+			ClipsDescendants = true,
+			Active = true,
+			ZIndex = 1,
+			Parent = ScreenGui
+		}, {
+			Create("UICorner", { CornerRadius = UDim.new(0, 12) }),
+			Create("UIStroke", { Color = Theme.Window_Outline, Thickness = 1 })
+		})
+
+		local WindowScale = Create("UIScale", { Scale = 0.96, Parent = Window })
+		Tween(WindowScale, 0.22, { Scale = 1 })
+
+		-- // Rail (window background shows through) ---------------------------
+		local Rail = Create("Frame", {
+			Name = "Rail",
+			Size = UDim2.new(0, Info.RailWidth, 1, 0),
+			BackgroundTransparency = 1,
+			ZIndex = 1,
+			Parent = Window
+		})
+
+		local RailHeader = Create("Frame", {
+			Name = "Header",
+			Size = UDim2.new(1, 0, 0, 64),
+			BackgroundTransparency = 1,
+			Active = true, -- drag handle
+			ZIndex = 1,
+			Parent = Rail
+		})
+
+		local TitleAlignment = Enum.TextXAlignment.Center
+		if typeof(Info.TitleAlign) == "EnumItem" then
+			TitleAlignment = Info.TitleAlign
+		elseif string.lower(tostring(Info.TitleAlign)) == "left" then
+			TitleAlignment = Enum.TextXAlignment.Left
+		end
+
+		local TitleY = Info.SubTitle and 14 or 0
+		Create("TextLabel", {
+			Name = "Title",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 10, 0, TitleY),
+			Size = UDim2.new(1, -20, 0, Info.SubTitle and 20 or 64),
+			Font = Enum.Font.GothamSemibold,
+			TextSize = 15,
+			TextColor3 = Theme.Text,
+			TextXAlignment = TitleAlignment,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = Info.Name,
+			ZIndex = 1,
+			Parent = RailHeader
+		})
+
+		if Info.SubTitle then
+			Create("TextLabel", {
+				Name = "SubTitle",
+				BackgroundTransparency = 1,
+				Position = UDim2.new(0, 10, 0, 34),
+				Size = UDim2.new(1, -20, 0, 14),
+				Font = Enum.Font.Gotham,
+				TextSize = 11,
+				TextColor3 = Theme.Text_Dim,
+				TextXAlignment = TitleAlignment,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				Text = Info.SubTitle,
+				ZIndex = 1,
+				Parent = RailHeader
+			})
+		end
+
+		MakeDraggable(RailHeader, Window)
+
+		local RailList = Create("ScrollingFrame", {
+			Name = "Tabs",
+			Position = UDim2.new(0, 8, 0, 64),
+			Size = UDim2.new(1, -16, 1, -72),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			CanvasSize = UDim2.new(),
+			ScrollBarThickness = 2,
+			ScrollBarImageColor3 = Theme.Divider,
+			ScrollBarImageTransparency = 0.5,
+			ZIndex = 1,
+			Parent = Rail
+		}, {
+			Create("UIListLayout", { Padding = UDim.new(0, 3), SortOrder = Enum.SortOrder.LayoutOrder })
+		})
+		HandleCanvasSize(RailList)
+
+		-- // Content (slightly lighter rounded panel) -------------------------
+		local Content = Create("Frame", {
+			Name = "Content",
+			Position = UDim2.new(0, Info.RailWidth + 8, 0, 8),
+			Size = UDim2.new(1, -(Info.RailWidth + 16), 1, -16),
+			BackgroundColor3 = Theme.Content_Background,
+			BorderSizePixel = 0,
+			Active = true, -- dragging from an empty content area moves the window
+			ZIndex = 1,
+			Parent = Window
+		}, {
+			Create("UICorner", { CornerRadius = UDim.new(0, 10) })
+		})
+
+		-- // Search row + hairline divider -----------------------------------
+		local HeaderHeight = 0
+		if Info.Search then
+			HeaderHeight = 50
+
+			local SearchFrame = Create("Frame", {
+				Name = "Search",
+				Position = UDim2.new(0, 10, 0, 10),
+				Size = UDim2.new(1, -20, 0, 30),
+				BackgroundColor3 = Theme.Search_Background,
+				BorderSizePixel = 0,
+				ZIndex = 2,
+				Parent = Content
+			}, {
+				Create("UICorner", { CornerRadius = UDim.new(0, 8) }),
+				Create("UIStroke", { Color = Theme.Search_Outline, Thickness = 1 })
+			})
+
+			-- offsets instead of padding: UIPadding does not inset a TextBox's own text
+			local SearchBox = Create("TextBox", {
+				Name = "Input",
+				BackgroundTransparency = 1,
+				Position = UDim2.new(0, 12, 0, 0),
+				Size = UDim2.new(1, -22, 1, 0),
+				Font = Enum.Font.Gotham,
+				TextSize = 12,
+				TextColor3 = Theme.Text,
+				PlaceholderText = Info.SearchPlaceholder,
+				PlaceholderColor3 = Theme.Text_Dim,
+				Text = "",
+				TextXAlignment = Enum.TextXAlignment.Left,
+				ClearTextOnFocus = false,
+				ZIndex = 2,
+				Parent = SearchFrame
+			})
+
+			local SearchStroke = SearchFrame:FindFirstChildOfClass("UIStroke")
+			SearchBox.Focused:Connect(function()
+				Tween(SearchStroke, 0.15, { Color = Theme.Accent, Transparency = 0.2 })
+			end)
+			SearchBox.FocusLost:Connect(function()
+				Tween(SearchStroke, 0.15, { Color = Theme.Search_Outline, Transparency = 0 })
+			end)
+			SearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+				Library:FilterTabs(SearchBox.Text)
+			end)
+
+			Library.SearchBox = SearchBox
+
+			Create("Frame", {
+				Name = "HeaderDivider",
+				Position = UDim2.new(0, 0, 0, HeaderHeight),
+				Size = UDim2.new(1, 0, 0, 1),
+				BackgroundColor3 = Theme.Divider,
+				BorderSizePixel = 0,
+				ZIndex = 2,
+				Parent = Content
+			})
+		else
+			Library.SearchBox = nil
+		end
+
+		local Pages = Create("Frame", {
+			Name = "Pages",
+			Position = UDim2.new(0, 0, 0, HeaderHeight),
+			Size = UDim2.new(1, 0, 1, -HeaderHeight),
+			BackgroundTransparency = 1,
+			ZIndex = 1,
+			Parent = Content
+		})
+
+		-- // Invisible resize zone (bottom-right corner) ---------------------
+		if Info.Resizable then
+			local ResizeZone = Create("Frame", {
+				Name = "Resize",
+				AnchorPoint = Vector2.new(1, 1),
+				Position = UDim2.new(1, 0, 1, 0),
+				Size = UDim2.new(0, 18, 0, 18),
+				BackgroundTransparency = 1,
+				Active = true,
+				ZIndex = 3,
+				Parent = Window
+			})
+			MakeResizeable(ResizeZone, Window, Vector2.new(420, 300), Vector2.new(900, 640))
+		end
+
+		-- // Hide / show keybind --------------------------------------------
+		UserInputService.InputBegan:Connect(function(Input, GameProcessed)
+			if GameProcessed then
+				return
+			end
+			if Input.KeyCode == Info.ToggleKeybind then
+				ScreenGui.Enabled = not ScreenGui.Enabled
+			end
+		end)
+
+		Library.Window = {
+			Name = Info.Name,
+			ScreenGui = ScreenGui,
+			Frame = Window,
+			Rail = Rail,
+			RailHeader = RailHeader,
+			RailList = RailList,
+			Content = Content,
+			Pages = Pages,
+			EmptyText = Info.EmptyText,
+			ToggleKeybind = Info.ToggleKeybind
+		}
+
+		return Library.Window
+	end
+
+	-- ///////////////////////////////////////////////////////////////////////
+	-- // Tabs + separators
+	-- ///////////////////////////////////////////////////////////////////////
+
+	function Library:CreateTab(Info)
+		if type(Info) == "string" then
+			Info = { Name = Info }
+		end
+		Info = Info or {}
+		Info.Name = tostring(Info.Name or "Tab")
+
+		assert(Library.Window, "[Libary] Create a window first (Library:CreateWindow)")
+
+		local W = Library.Window
+		local IsFirst = #Library.Tabs == 0
+
+		local TabButton = Create("TextButton", {
+			Name = Info.Name,
+			Size = UDim2.new(1, 0, 0, 30),
+			BackgroundColor3 = Theme.Tab_Fill,
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+			LayoutOrder = Library.RailOrder + 1,
+			ZIndex = 1,
+			Parent = W.RailList
+		}, {
+			Create("UICorner", { CornerRadius = UDim.new(0, 8) })
+		})
+
+		local TabText = Create("TextLabel", {
+			Name = "Text",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 12, 0, 0),
+			Size = UDim2.new(1, -22, 1, 0),
+			Font = Enum.Font.Gotham,
+			TextSize = 12,
+			TextColor3 = Theme.Text_Muted,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = Info.Name,
+			ZIndex = 1,
+			Parent = TabButton
+		})
+
+		local Container = Create("Frame", {
+			Name = Info.Name,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 1, 0),
+			Visible = false,
+			ZIndex = 1,
+			Parent = W.Pages
+		})
+
+		local Empty = Create("TextLabel", {
+			Name = "Empty",
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, -8),
+			Size = UDim2.new(1, -40, 0, 16),
+			Font = Enum.Font.Gotham,
+			TextSize = 12,
+			TextColor3 = Theme.Text_Dim,
+			TextTransparency = 0.25,
+			Text = W.EmptyText,
+			ZIndex = 1,
+			Parent = Container
+		})
+
+		local Tab = {
+			Name = Info.Name,
+			TabButton = TabButton,
+			TextLabel = TabText,
+			Container = Container,
+			Empty = Empty
+		}
+
+		Library.Tabs[#Library.Tabs + 1] = Tab
+		table.insert(CurrentGroup().Tabs, Tab)
+
+		Library.RailOrder = Library.RailOrder + 1
+		TabButton.LayoutOrder = Library.RailOrder
+
+		function Tab:SetEmpty(Visible)
+			Empty.Visible = Visible and true or false
+		end
+
+		function Tab:Show()
+			Library:ShowTab(Tab.Name)
+		end
+
+		TabButton.MouseButton1Click:Connect(function()
+			Library:ShowTab(Tab.Name)
+		end)
+
+		TabButton.MouseEnter:Connect(function()
+			if Library.CurrentTab == Tab then
+				return
+			end
+			Tween(TabButton, 0.15, { BackgroundTransparency = 0.5 })
+			Tween(TabText, 0.15, { TextColor3 = Theme.Text })
+		end)
+
+		TabButton.MouseLeave:Connect(function()
+			if Library.CurrentTab == Tab then
+				return
+			end
+			Tween(TabButton, 0.15, { BackgroundTransparency = 1 })
+			Tween(TabText, 0.15, { TextColor3 = Theme.Text_Muted })
+		end)
+
+		if IsFirst then
+			Library:ShowTab(Info.Name)
+		end
+
+		return Tab
+	end
+
+	function Library:ShowTab(Name)
+		local Wanted = string.lower(tostring(Name or ""))
+
+		for _, Tab in next, Library.Tabs do
+			local Active = string.lower(Tab.Name) == Wanted
+
+			Tab.Container.Visible = Active
+
+			if Active then
+				Library.CurrentTab = Tab
+			end
+
+			if Library.Style == "Accent" then
+				Tween(Tab.TabButton, 0.15, {
+					BackgroundColor3 = Theme.Accent,
+					BackgroundTransparency = Active and 0 or 1
+				})
+			else
+				Tween(Tab.TabButton, 0.15, {
+					BackgroundColor3 = Theme.Tab_Fill,
+					BackgroundTransparency = Active and 0 or 1
+				})
+			end
+
+			Tween(Tab.TextLabel, 0.15, {
+				TextColor3 = Active and Theme.Text_Active or Theme.Text_Muted
+			})
+		end
+
+		return Library.CurrentTab
+	end
+
+	-- text separator between tab groups (like "GENERAL" / "WORLD" / "SETTINGS")
+	function Library:AddRailSection(Info)
+		if type(Info) == "string" then
+			Info = { Name = Info }
+		end
+		Info = Info or {}
+		Info.Name = tostring(Info.Name or "Section")
+
+		assert(Library.Window, "[Libary] Create a window first (Library:CreateWindow)")
+
+		local Separator = Create("Frame", {
+			Name = "Separator",
+			Size = UDim2.new(1, 0, 0, 28),
+			BackgroundTransparency = 1,
+			LayoutOrder = Library.RailOrder + 1,
+			ZIndex = 1,
+			Parent = Library.Window.RailList
+		})
+
+		Create("TextLabel", {
+			Name = "Caption",
+			BackgroundTransparency = 1,
+			Position = UDim2.new(0, 12, 0, 12),
+			Size = UDim2.new(1, -24, 0, 12),
+			Font = Enum.Font.GothamMedium,
+			TextSize = 10,
+			TextColor3 = Theme.Caption,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Text = string.upper(Info.Name),
+			ZIndex = 1,
+			Parent = Separator
+		})
+
+		Library.RailOrder = Library.RailOrder + 1
+		PushGroup(Separator)
+
+		return Separator
+	end
+
+	-- thin line separator (no text)
+	function Library:AddRailDivider()
+		assert(Library.Window, "[Libary] Create a window first (Library:CreateWindow)")
+
+		local Wrapper = Create("Frame", {
+			Name = "Divider",
+			Size = UDim2.new(1, 0, 0, 10),
+			BackgroundTransparency = 1,
+			LayoutOrder = Library.RailOrder + 1,
+			ZIndex = 1,
+			Parent = Library.Window.RailList
+		})
+
+		Create("Frame", {
+			Name = "Line",
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 0, 0.5, 0),
+			Size = UDim2.new(1, 0, 0, 1),
+			BackgroundColor3 = Theme.Divider,
+			BorderSizePixel = 0,
+			ZIndex = 1,
+			Parent = Wrapper
+		})
+
+		Library.RailOrder = Library.RailOrder + 1
+		PushGroup(Wrapper)
+
+		return Wrapper
+	end
+
+	-- tab search: hides non-matching tabs and the groups they belong to
+	function Library:FilterTabs(Text)
+		local Query = string.lower(tostring(Text or ""))
+
+		for _, Tab in next, Library.Tabs do
+			Tab.TabButton.Visible = Query == "" or string.find(string.lower(Tab.Name), Query, 1, true) ~= nil
+		end
+
+		for _, Group in next, Library.Groups do
+			local AnyVisible = Query == ""
+			if not AnyVisible then
+				for _, Tab in next, Group.Tabs do
+					if Tab.TabButton.Visible then
+						AnyVisible = true
+						break
+					end
+				end
+			end
+			if Group.Frame then
+				Group.Frame.Visible = AnyVisible
+			end
+		end
+	end
+
+	-- ///////////////////////////////////////////////////////////////////////
+	-- // Lifecycle
+	-- ///////////////////////////////////////////////////////////////////////
+
+	function Library:SetVisible(State)
+		if Library.Window then
+			Library.Window.ScreenGui.Enabled = State and true or false
+		end
+	end
+
+	function Library:Toggle()
+		if Library.Window then
+			Library:SetVisible(not Library.Window.ScreenGui.Enabled)
+		end
+	end
+
+	function Library:Destroy()
+		if Library.Window then
+			Pcall(function()
+				Library.Window.ScreenGui:Destroy()
+			end)
+			Library.Window = nil
+		end
+		Library.Tabs = {}
+		Library.Groups = {}
+		Library.CurrentTab = nil
+		Library.SearchBox = nil
+	end
+end
+
+return Library
