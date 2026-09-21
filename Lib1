@@ -1,0 +1,754 @@
+local cloneref = cloneref or clonereference or function(instance)
+	return instance
+end
+
+local Players = cloneref(game:GetService("Players"))
+local TweenService = cloneref(game:GetService("TweenService"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local HttpService = cloneref(game:GetService("HttpService"))
+
+local FONT_ID = "rbxassetid://12187365364"
+local ICON_PACK_URL = "https://raw.githubusercontent.com/Footagesus/Icons/refs/heads/main/lucide/dist/Icons.lua"
+
+local TabHeight = 34
+local TabRadius = 9
+local TabPadding = 9
+local TabGap = 9
+local TabSpacing = 2
+local TabIconSize = 16
+
+local Fonts = {
+	Medium = Font.new(FONT_ID, Enum.FontWeight.Medium),
+	SemiBold = Font.new(FONT_ID, Enum.FontWeight.SemiBold),
+}
+
+local Library = {
+	Theme = {
+		Accent = Color3.fromHex("#4b3df5"),
+		Logo = Color3.fromHex("#8b8bff"),
+		Background = Color3.fromHex("#121216"),
+		BackgroundDeep = Color3.fromHex("#0b0b0d"),
+		Sidebar = Color3.fromHex("#1a1b20"),
+		SidebarDeep = Color3.fromHex("#131418"),
+		Panel = Color3.fromHex("#1a1a1f"),
+		PanelDeep = Color3.fromHex("#141417"),
+		PanelTransparency = 0,
+		Text = Color3.fromHex("#ffffff"),
+		TitleTransparency = 0,
+		TabTextTransparency = 0.4,
+		TabTextTransparencyHover = 0.18,
+		TabTextTransparencyActive = 0,
+		TabBackgroundHover = Color3.fromHex("#ffffff"),
+		TabBackgroundHoverTransparency = 0.94,
+		TabSheen = 0.74,
+		Outline = Color3.fromHex("#ffffff"),
+		OutlineTransparency = 0.82,
+		Shadow = Color3.fromHex("#000000"),
+		ShadowTransparency = 0.5,
+	},
+	Connections = {},
+	Visible = true,
+}
+
+local IconPack = {
+	Source = ICON_PACK_URL,
+	Loaded = false,
+	Data = nil,
+}
+
+local function New(className, properties, children)
+	local object = Instance.new(className)
+
+	for property, value in next, properties or {} do
+		object[property] = value
+	end
+
+	for _, child in next, children or {} do
+		child.Parent = object
+	end
+
+	return object
+end
+
+local function Tween(object, duration, properties, style)
+	return TweenService:Create(
+		object,
+		TweenInfo.new(duration, style or Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+		properties
+	)
+end
+
+local function Connect(signal, callback)
+	local connection = signal:Connect(callback)
+	table.insert(Library.Connections, connection)
+	return connection
+end
+
+local function WithDefaults(config, defaults)
+	local options = {}
+
+	for key, value in next, defaults do
+		options[key] = value
+	end
+
+	for key, value in next, config or {} do
+		if value ~= nil then
+			options[key] = value
+		end
+	end
+
+	return options
+end
+
+local function GetContainer(explicit)
+	if typeof(explicit) == "Instance" then
+		return explicit
+	end
+
+	local success, hidden = pcall(function()
+		return gethui()
+	end)
+
+	if success and typeof(hidden) == "Instance" then
+		return hidden
+	end
+
+	local ok, core = pcall(function()
+		return game:GetService("CoreGui")
+	end)
+
+	if ok and typeof(core) == "Instance" then
+		return core
+	end
+
+	return Players.LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local function Gradient(top, bottom)
+	return New("UIGradient", {
+		Rotation = 90,
+		Color = ColorSequence.new(top, bottom),
+	})
+end
+
+local function Sheen(transparency)
+	return New("UIGradient", {
+		Rotation = 90,
+		Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.new(1, 1, 1)),
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, transparency),
+			NumberSequenceKeypoint.new(1, 1),
+		}),
+	})
+end
+
+local function Outline(color, transparency)
+	return New("UIStroke", {
+		Color = color,
+		Transparency = transparency,
+		Thickness = 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, {
+		New("UIGradient", {
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0),
+				NumberSequenceKeypoint.new(0.5, 0.4),
+				NumberSequenceKeypoint.new(1, 0.75),
+			}),
+		}),
+	})
+end
+
+function IconPack.Load()
+	if IconPack.Loaded then
+		return IconPack.Data
+	end
+
+	IconPack.Loaded = true
+
+	local success, source = pcall(function()
+		return (game.HttpGet and game:HttpGet(IconPack.Source)) or HttpService:GetAsync(IconPack.Source)
+	end)
+
+	if not success or typeof(source) ~= "string" then
+		return nil
+	end
+
+	local compile = loadstring or load
+	local compiled, chunk = pcall(compile, source)
+
+	if not compiled or typeof(chunk) ~= "function" then
+		return nil
+	end
+
+	local ok, data = pcall(chunk)
+
+	if ok and typeof(data) == "table" then
+		IconPack.Data = data
+	end
+
+	return IconPack.Data
+end
+
+function Library:ResolveIcon(icon)
+	if typeof(icon) ~= "string" or icon == "" then
+		return nil
+	end
+
+	if icon:match("^rbxassetid://%d+") or icon:match("^rbxasset://") or icon:match("^https?://") then
+		return icon
+	end
+
+	local pack = IconPack.Load()
+	return pack and pack[icon] or nil
+end
+
+function Library:SetVisible(value)
+	Library.Visible = value and true or false
+
+	if Library.Window and Library.Window.UI.Gui then
+		Library.Window.UI.Gui.Enabled = Library.Visible
+	end
+end
+
+function Library:Toggle()
+	Library:SetVisible(not Library.Visible)
+end
+
+function Library:Destroy()
+	for _, connection in next, Library.Connections do
+		connection:Disconnect()
+	end
+
+	table.clear(Library.Connections)
+
+	if Library.Window and Library.Window.UI.Gui then
+		Library.Window.UI.Gui:Destroy()
+	end
+
+	Library.Window = nil
+end
+
+function Library:CreateWindow(config)
+	local options = WithDefaults(config, {
+		Title = "UI Library",
+		Logo = nil,
+		LogoColor = nil,
+		Size = Vector2.new(580, 460),
+		SidebarWidth = 200,
+		Padding = 12,
+		Radius = 16,
+		ToggleKey = Enum.KeyCode.RightShift,
+		Parent = nil,
+	})
+
+	local theme = Library.Theme
+	local padding = options.Padding
+	local sidebarWidth = options.SidebarWidth
+	local logoColor = options.LogoColor or theme.Logo
+	local logoAsset = Library:ResolveIcon(options.Logo)
+
+	local Window = {
+		Title = options.Title,
+		Tabs = {},
+		Selected = nil,
+		IndicatorTween = nil,
+		UI = {},
+	}
+
+	local gui = New("ScreenGui", {
+		Name = "Libary",
+		ResetOnSpawn = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		DisplayOrder = 999,
+	})
+
+	local container = GetContainer(options.Parent)
+
+	if not pcall(function()
+		gui.Parent = container
+	end) then
+		gui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+	end
+
+	local root = New("Frame", {
+		Name = "Window",
+		Size = UDim2.fromOffset(options.Size.X, 0),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundTransparency = 1,
+		Active = true,
+		Parent = gui,
+	})
+
+	New("ImageLabel", {
+		Name = "Shadow",
+		Image = "rbxassetid://8992230677",
+		ImageColor3 = theme.Shadow,
+		ImageTransparency = theme.ShadowTransparency,
+		ScaleType = Enum.ScaleType.Slice,
+		SliceCenter = Rect.new(99, 99, 99, 99),
+		Size = UDim2.new(1, 80, 1, 80),
+		Position = UDim2.fromScale(0.5, 0.5),
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		BackgroundTransparency = 1,
+		ZIndex = 0,
+		Parent = root,
+	})
+
+	local background = New("Frame", {
+		Name = "Background",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = theme.Background,
+		BorderSizePixel = 0,
+		Active = true,
+		ZIndex = 1,
+		Parent = root,
+	}, {
+		New("UICorner", {
+			CornerRadius = UDim.new(0, options.Radius),
+		}),
+		Gradient(theme.Background, theme.BackgroundDeep),
+		Outline(theme.Outline, theme.OutlineTransparency),
+	})
+
+	local sidebar = New("Frame", {
+		Name = "Sidebar",
+		Size = UDim2.new(0, sidebarWidth, 1, -padding * 2),
+		Position = UDim2.fromOffset(padding, padding),
+		BackgroundColor3 = theme.Sidebar,
+		BorderSizePixel = 0,
+		Parent = background,
+	}, {
+		New("UICorner", {
+			CornerRadius = UDim.new(0, options.Radius - 6),
+		}),
+		Gradient(theme.Sidebar, theme.SidebarDeep),
+		Outline(theme.Outline, theme.OutlineTransparency),
+	})
+
+	local header = New("Frame", {
+		Name = "Header",
+		Size = UDim2.new(1, 0, 0, 46),
+		BackgroundTransparency = 1,
+		Active = true,
+		Parent = sidebar,
+	})
+
+	local titleOffset = 12
+
+	if logoAsset then
+		New("ImageLabel", {
+			Name = "Logo",
+			Image = logoAsset,
+			ImageColor3 = logoColor,
+			Size = UDim2.fromOffset(18, 18),
+			Position = UDim2.new(0, 12, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			BackgroundTransparency = 1,
+			Parent = header,
+		})
+
+		titleOffset = 40
+	end
+
+	local title = New("TextLabel", {
+		Name = "Title",
+		Text = options.Title,
+		FontFace = Fonts.SemiBold,
+		TextSize = 15,
+		TextColor3 = theme.Text,
+		TextTransparency = theme.TitleTransparency,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, -(titleOffset + 12), 1, 0),
+		Position = UDim2.fromOffset(titleOffset, 0),
+		BackgroundTransparency = 1,
+		Parent = header,
+	})
+
+	local indicatorHolder = New("Frame", {
+		Name = "Indicator",
+		Size = UDim2.new(1, -16, 1, -50),
+		Position = UDim2.fromOffset(8, 46),
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		ZIndex = 1,
+		Parent = sidebar,
+	})
+
+	local indicator = New("Frame", {
+		Name = "Pill",
+		Size = UDim2.new(1, 0, 0, TabHeight),
+		BackgroundColor3 = theme.Accent,
+		Visible = false,
+		Parent = indicatorHolder,
+	}, {
+		New("UICorner", {
+			CornerRadius = UDim.new(0, TabRadius),
+		}),
+		Sheen(theme.TabSheen),
+		Outline(theme.Outline, theme.OutlineTransparency),
+	})
+
+	local list = New("ScrollingFrame", {
+		Name = "Tabs",
+		Size = UDim2.new(1, -16, 1, -50),
+		Position = UDim2.fromOffset(8, 46),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 0,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ElasticBehavior = Enum.ElasticBehavior.Never,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ZIndex = 2,
+		Parent = sidebar,
+	}, {
+		New("UIPadding", {
+			PaddingBottom = UDim.new(0, 8),
+		}),
+		New("UIListLayout", {
+			Padding = UDim.new(0, TabSpacing),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}),
+	})
+
+	local content = New("Frame", {
+		Name = "Content",
+		Size = UDim2.new(1, -(sidebarWidth + padding * 3), 1, -padding * 2),
+		Position = UDim2.fromOffset(padding * 2 + sidebarWidth, padding),
+		BackgroundColor3 = theme.Panel,
+		BackgroundTransparency = theme.PanelTransparency,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Parent = background,
+	}, {
+		New("UICorner", {
+			CornerRadius = UDim.new(0, options.Radius - 6),
+		}),
+		Gradient(theme.Panel, theme.PanelDeep),
+		Outline(theme.Outline, theme.OutlineTransparency),
+	})
+
+	Window.UI = {
+		Gui = gui,
+		Root = root,
+		Background = background,
+		Sidebar = sidebar,
+		Header = header,
+		Title = title,
+		Indicator = indicator,
+		List = list,
+		Content = content,
+	}
+
+	function Window:Animate(tab, key, object, duration, properties, style)
+		local current = tab.Tweens[key]
+
+		if current then
+			current:Cancel()
+		end
+
+		tab.Tweens[key] = Tween(object, duration, properties, style)
+		tab.Tweens[key]:Play()
+	end
+
+	function Window:UpdateIndicator(animated)
+		local tab = Window.Selected
+
+		if not tab then
+			return
+		end
+
+		local offset = (tab.Index - 1) * (TabHeight + TabSpacing) - list.CanvasPosition.Y
+
+		if Window.IndicatorTween then
+			Window.IndicatorTween:Cancel()
+			Window.IndicatorTween = nil
+		end
+
+		indicator.Visible = true
+
+		if not animated then
+			indicator.Position = UDim2.fromOffset(0, offset)
+			return
+		end
+
+		Window.IndicatorTween = Tween(indicator, 0.4, {
+			Position = UDim2.fromOffset(0, offset),
+		}, Enum.EasingStyle.Quint)
+
+		Window.IndicatorTween:Play()
+	end
+
+	function Window:Refresh()
+		for _, tab in next, Window.Tabs do
+			local active = tab == Window.Selected
+			local hovered = tab.Hovered and not active
+			local foreground = theme.TabTextTransparency
+
+			if active then
+				foreground = theme.TabTextTransparencyActive
+			elseif hovered then
+				foreground = theme.TabTextTransparencyHover
+			end
+
+			Window:Animate(tab, "Button", tab.UI.Button, 0.15, {
+				BackgroundColor3 = theme.TabBackgroundHover,
+				BackgroundTransparency = hovered and theme.TabBackgroundHoverTransparency or 1,
+			})
+
+			Window:Animate(tab, "Title", tab.UI.Title, 0.15, {
+				TextTransparency = foreground,
+			})
+
+			if tab.UI.Icon then
+				Window:Animate(tab, "Icon", tab.UI.Icon, 0.15, {
+					ImageTransparency = foreground,
+				})
+			end
+		end
+	end
+
+	function Window:SelectTab(tab)
+		if typeof(tab) == "string" then
+			for _, item in next, Window.Tabs do
+				if item.Title:lower() == tab:lower() then
+					tab = item
+					break
+				end
+			end
+		end
+
+		if typeof(tab) ~= "table" or tab.Window ~= Window or tab == Window.Selected then
+			return
+		end
+
+		local previous = Window.Selected
+		local direction = previous and (tab.Index > previous.Index and 1 or -1) or 1
+
+		Window.Selected = tab
+		Window:Refresh()
+
+		if previous then
+			Window:Animate(previous, "Page", previous.UI.Group, 0.2, {
+				GroupTransparency = 1,
+			})
+
+			task.delay(0.2, function()
+				if previous ~= Window.Selected then
+					previous.UI.Group.Visible = false
+				end
+			end)
+		end
+
+		local group = tab.UI.Group
+
+		group.Position = UDim2.fromOffset(24 * direction, 0)
+		group.GroupTransparency = 1
+		group.Visible = true
+
+		Window:Animate(tab, "Page", group, 0.35, {
+			Position = UDim2.fromOffset(0, 0),
+			GroupTransparency = 0,
+		})
+
+		Window:UpdateIndicator(previous ~= nil)
+	end
+
+	function Window:CreateTab(config)
+		local tabOptions = WithDefaults(typeof(config) == "string" and { Title = config } or config, {
+			Title = "Tab",
+			Icon = nil,
+		})
+
+		local iconAsset = Library:ResolveIcon(tabOptions.Icon)
+
+		local tab = {
+			Window = Window,
+			Title = tabOptions.Title,
+			Index = #Window.Tabs + 1,
+			Hovered = false,
+			Tweens = {},
+			UI = {},
+		}
+
+		local page = New("ScrollingFrame", {
+			Name = tabOptions.Title,
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 0,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
+			ElasticBehavior = Enum.ElasticBehavior.Never,
+			CanvasSize = UDim2.new(0, 0, 0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		}, {
+			New("UIPadding", {
+				PaddingTop = UDim.new(0, 10),
+				PaddingLeft = UDim.new(0, 10),
+				PaddingRight = UDim.new(0, 10),
+				PaddingBottom = UDim.new(0, 10),
+			}),
+			New("UIListLayout", {
+				Padding = UDim.new(0, 6),
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				HorizontalAlignment = Enum.HorizontalAlignment.Center,
+			}),
+		})
+
+		local group = New("CanvasGroup", {
+			Name = tabOptions.Title,
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			GroupTransparency = 1,
+			Visible = false,
+			Parent = content,
+		}, {
+			page,
+		})
+
+		local button = New("TextButton", {
+			Name = tabOptions.Title,
+			Size = UDim2.new(1, 0, 0, TabHeight),
+			BackgroundColor3 = theme.TabBackgroundHover,
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			Text = "",
+			LayoutOrder = tab.Index,
+			Parent = list,
+		}, {
+			New("UICorner", {
+				CornerRadius = UDim.new(0, TabRadius),
+			}),
+			New("UIPadding", {
+				PaddingLeft = UDim.new(0, TabPadding),
+				PaddingRight = UDim.new(0, TabPadding),
+			}),
+			New("UIListLayout", {
+				Padding = UDim.new(0, TabGap),
+				FillDirection = Enum.FillDirection.Horizontal,
+				VerticalAlignment = Enum.VerticalAlignment.Center,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}),
+		})
+
+		local iconLabel
+
+		if iconAsset then
+			iconLabel = New("ImageLabel", {
+				Name = "Icon",
+				Image = iconAsset,
+				ImageColor3 = theme.Text,
+				ImageTransparency = theme.TabTextTransparency,
+				Size = UDim2.fromOffset(TabIconSize, TabIconSize),
+				LayoutOrder = 1,
+				BackgroundTransparency = 1,
+				Parent = button,
+			})
+		end
+
+		local titleLabel = New("TextLabel", {
+			Name = "Title",
+			Text = tabOptions.Title,
+			FontFace = Fonts.Medium,
+			TextSize = 15,
+			TextColor3 = theme.Text,
+			TextTransparency = theme.TabTextTransparency,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, -(TabPadding * 2 + (iconAsset and TabIconSize + TabGap or 0)), 1, 0),
+			LayoutOrder = 2,
+			BackgroundTransparency = 1,
+			Parent = button,
+		})
+
+		tab.UI = {
+			Button = button,
+			Icon = iconLabel,
+			Title = titleLabel,
+			Page = page,
+			Group = group,
+		}
+
+		function tab:Select()
+			Window:SelectTab(tab)
+		end
+
+		Connect(button.MouseEnter, function()
+			tab.Hovered = true
+			Window:Refresh()
+		end)
+
+		Connect(button.MouseLeave, function()
+			tab.Hovered = false
+			Window:Refresh()
+		end)
+
+		Connect(button.MouseButton1Click, function()
+			Window:SelectTab(tab)
+		end)
+
+		table.insert(Window.Tabs, tab)
+
+		if not Window.Selected then
+			Window:SelectTab(tab)
+		end
+
+		return tab
+	end
+
+	Connect(list:GetPropertyChangedSignal("CanvasPosition"), function()
+		Window:UpdateIndicator(false)
+	end)
+
+	local dragging = false
+	local dragStart, dragOrigin
+
+	Connect(header.InputBegan, function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			dragOrigin = root.Position
+		end
+	end)
+
+	Connect(UserInputService.InputChanged, function(input)
+		if not dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement then
+			return
+		end
+
+		local delta = input.Position - dragStart
+		root.Position = UDim2.new(
+			dragOrigin.X.Scale,
+			dragOrigin.X.Offset + delta.X,
+			dragOrigin.Y.Scale,
+			dragOrigin.Y.Offset + delta.Y
+		)
+	end)
+
+	Connect(UserInputService.InputEnded, function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	if options.ToggleKey then
+		Connect(UserInputService.InputBegan, function(input, processed)
+			if processed or input.KeyCode ~= options.ToggleKey then
+				return
+			end
+
+			Library:Toggle()
+		end)
+	end
+
+	Tween(root, 0.3, { Size = UDim2.fromOffset(options.Size.X, options.Size.Y) }):Play()
+
+	Library.Window = Window
+	return Window
+end
+
+return Library
